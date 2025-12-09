@@ -1,5 +1,7 @@
 import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
+import path from 'path'; // Import necessário
+import uploadConfig from './config/upload'; // Import da configuração
 import { errorMiddleware } from './middlewares/error.middleware';
 
 // Routes
@@ -18,6 +20,10 @@ app.use(cors({
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// ==================== STATIC FILES ====================
+// Permite acessar http://localhost:3001/files/nome-da-foto.jpg
+app.use('/files', express.static(uploadConfig.directory));
 
 // ==================== ROUTES ====================
 app.get('/api/health', (req: Request, res: Response) => {

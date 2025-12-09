@@ -1,8 +1,13 @@
-import { Router } from 'express';
+import { Router, Response } from 'express';
+import multer from 'multer';
+import uploadConfig from '../config/upload';
 import { OccurrenceController } from '../controllers/occurrence.controller';
-import { authMiddleware, checkPermission } from '../middlewares/auth.middleware';
+import { authMiddleware, checkPermission, AuthRequest } from '../middlewares/auth.middleware';
+import { validate } from '../middlewares/validation.middleware';
+import { createOccurrenceValidator, updateOccurrenceValidator } from '../validators/occurrence.validator';
 
 const router = Router();
+const upload = multer(uploadConfig);
 const occurrenceController = new OccurrenceController();
 
 // Todas as rotas precisam de autenticação
@@ -11,45 +16,57 @@ router.use(authMiddleware);
 /**
  * @route   GET /api/occurrences
  * @desc    Listar todas as ocorrências com filtros
- * @access  Private
  */
-router.get('/', (req, res) => occurrenceController.list(req, res));
+router.get('/', (req: AuthRequest, res: Response) => occurrenceController.list(req, res));
 
 /**
  * @route   GET /api/occurrences/stats
  * @desc    Obter estatísticas das ocorrências
- * @access  Private
  */
-router.get('/stats', (req, res) => occurrenceController.getStats(req, res));
+router.get('/stats', (req: AuthRequest, res: Response) => occurrenceController.getStats(req, res));
 
 /**
  * @route   GET /api/occurrences/:id
  * @desc    Obter uma ocorrência específica
- * @access  Private
  */
-router.get('/:id', (req, res) => occurrenceController.getById(req, res));
+router.get('/:id', (req: AuthRequest, res: Response) => occurrenceController.getById(req, res));
 
 /**
  * @route   POST /api/occurrences
- * @desc    Criar nova ocorrência
- * @access  Private (Permissão: Criar)
+ * @desc    Criar nova ocorrência (agora com suporte a upload de fotos)
+ * @access  Private
  */
-router.post('/', (req, res) => occurrenceController.create(req, res));
+router.post(
+  '/',
+  checkPermission('Visualizar'), // Ajuste permissão se necessário
+  upload.array('fotos', 5),      // Middleware Multer: campo 'fotos', máx 5 arquivos
+  createOccurrenceValidator,     // Validações do express-validator
+  validate,                      // Middleware de checagem de erros
+  (req: AuthRequest, res: Response) => occurrenceController.create(req, res)
+);
 
 /**
  * @route   PUT /api/occurrences/:id
  * @desc    Atualizar ocorrência
- * @access  Private (Permissão: Editar)
+ * @access  Private
  */
-router.put('/:id', (req, res) => occurrenceController.update(req, res));
+router.put(
+  '/:id', 
+  checkPermission('Editar'),
+  updateOccurrenceValidator,
+  validate,
+  (req: AuthRequest, res: Response) => occurrenceController.update(req, res)
+);
 
 /**
  * @route   DELETE /api/occurrences/:id
  * @desc    Excluir ocorrência
- * @access  Private (Permissão: Excluir)
+ * @access  Private
  */
-router.delete('/:id', checkPermission('Excluir'), (req, res) => 
-  occurrenceController.delete(req, res)
+router.delete(
+  '/:id', 
+  checkPermission('Excluir'), 
+  (req: AuthRequest, res: Response) => occurrenceController.delete(req, res)
 );
 
 export default router;

@@ -1,90 +1,37 @@
-import { Response } from 'express';
+import { Response, Request } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AuthRequest } from '../middlewares/auth.middleware';
-import axios from 'axios';
+import { OccurrenceService } from '../services/occurrence.service';
 
+const occurrenceService = new OccurrenceService();
 const prisma = new PrismaClient();
 
 export class OccurrenceController {
+  
   // ==================== CREATE ====================
   async create(req: AuthRequest, res: Response) {
     try {
-      const {
-        tipo,
-        local,
-        endereco,
-        latitude,
-        longitude,
-        status,
-        prioridade,
-        descricao,
-        responsavelId
-      } = req.body;
+      // O Multer adiciona o campo 'files' ao objeto req
+      const files = req.files as Express.Multer.File[];
 
-      if (!tipo || !local || !endereco) {
-        return res.status(400).json({
-          success: false,
-          message: 'Tipo, local e endereço são obrigatórios'
-        });
-      }
-
-      let lat = latitude;
-      let lng = longitude;
-
-      // Se não tiver coordenadas, fazer geocoding
-      if (!latitude || !longitude) {
-        try {
-          const geocoded = await this.geocodeAddress(endereco);
-          lat = geocoded.latitude;
-          lng = geocoded.longitude;
-        } catch (error) {
-          console.error('Geocoding error:', error);
-          // Usa coordenadas padrão de Recife se falhar
-          lat = -8.0476;
-          lng = -34.877;
-        }
-      }
-
-      const occurrence = await prisma.occurrence.create({
-        data: {
-          tipo,
-          local,
-          endereco,
-          latitude: lat,
-          longitude: lng,
-          status: status || 'NOVO',
-          prioridade: prioridade || 'MEDIA',
-          descricao,
-          criadoPorId: req.user!.id,
-          responsavelId,
-          dataOcorrencia: new Date()
-        },
-        include: {
-          criadoPor: {
-            select: {
-              nome: true,
-              email: true,
-              cargo: true
-            }
-          },
-          responsavel: {
-            select: {
-              nome: true,
-              email: true,
-              cargo: true
-            }
-          }
-        }
+      const occurrence = await occurrenceService.create({
+        ...req.body,
+        criadoPorId: req.user!.id,
+        files: files // Passamos os arquivos para o service
       });
 
-      // Log de auditoria
+      // Auditoria
       await prisma.auditLog.create({
         data: {
           userId: req.user!.id,
           acao: 'CREATE',
           entidade: 'OCCURRENCE',
           entidadeId: occurrence.id,
-          detalhes: { tipo, local },
+          detalhes: { 
+            tipo: occurrence.tipo, 
+            local: occurrence.local,
+            fotosCount: files ? files.length : 0
+          },
           ip: req.ip,
           userAgent: req.headers['user-agent']
         }
@@ -95,11 +42,48 @@ export class OccurrenceController {
         message: 'Ocorrência criada com sucesso',
         data: occurrence
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Create occurrence error:', error);
-      return res.status(500).json({
+      return res.status(error.statusCode || 500).json({
         success: false,
-        message: 'Erro ao criar ocorrência'
+        message: error.message || 'Erro ao criar ocorrência'
+      });
+    }
+  }
+
+  // ==================== UPDATE ====================
+  async update(req: AuthRequest, res: Response) {
+    try {
+      const { id } = req.params;
+      
+      const updatedOccurrence = await occurrenceService.update(
+        id, 
+        req.body, 
+        req.user!.id
+      );
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          acao: 'UPDATE',
+          entidade: 'OCCURRENCE',
+          entidadeId: id,
+          detalhes: { changes: req.body },
+          ip: req.ip,
+          userAgent: req.headers['user-agent']
+        }
+      });
+
+      return res.json({
+        success: true,
+        message: 'Ocorrência atualizada com sucesso',
+        data: updatedOccurrence
+      });
+    } catch (error: any) {
+      console.error('Update occurrence error:', error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        message: error.message || 'Erro ao atualizar ocorrência'
       });
     }
   }
@@ -108,13 +92,7 @@ export class OccurrenceController {
   async list(req: AuthRequest, res: Response) {
     try {
       const {
-        status,
-        tipo,
-        prioridade,
-        dataInicio,
-        dataFim,
-        page = 1,
-        limit = 50
+        status, tipo, prioridade, dataInicio, dataFim, page = 1, limit = 50
       } = req.query;
 
       const where: any = {};
@@ -136,20 +114,8 @@ export class OccurrenceController {
         prisma.occurrence.findMany({
           where,
           include: {
-            criadoPor: {
-              select: {
-                nome: true,
-                email: true,
-                cargo: true
-              }
-            },
-            responsavel: {
-              select: {
-                nome: true,
-                email: true,
-                cargo: true
-              }
-            }
+            criadoPor: { select: { nome: true, email: true, cargo: true } },
+            responsavel: { select: { nome: true, email: true, cargo: true } }
           },
           orderBy: { dataOcorrencia: 'desc' },
           skip,
@@ -177,295 +143,70 @@ export class OccurrenceController {
     }
   }
 
-  // ==================== GET BY ID ====================
+  // ==================== Outros métodos (getById, delete, getStats) ====================
+  // (Mantidos conforme o passo anterior, usando Prisma direto para leitura)
   async getById(req: AuthRequest, res: Response) {
     try {
       const { id } = req.params;
-
       const occurrence = await prisma.occurrence.findUnique({
         where: { id },
         include: {
-          criadoPor: {
-            select: {
-              nome: true,
-              email: true,
-              cargo: true,
-              telefone: true
-            }
-          },
-          responsavel: {
-            select: {
-              nome: true,
-              email: true,
-              cargo: true,
-              telefone: true
-            }
-          },
-          historico: {
-            orderBy: { createdAt: 'desc' }
-          }
+          criadoPor: { select: { nome: true, email: true, cargo: true, telefone: true } },
+          responsavel: { select: { nome: true, email: true, cargo: true, telefone: true } },
+          historico: { orderBy: { createdAt: 'desc' } }
         }
       });
 
-      if (!occurrence) {
-        return res.status(404).json({
-          success: false,
-          message: 'Ocorrência não encontrada'
-        });
-      }
-
-      return res.json({
-        success: true,
-        data: occurrence
-      });
+      if (!occurrence) return res.status(404).json({ success: false, message: 'Ocorrência não encontrada' });
+      return res.json({ success: true, data: occurrence });
     } catch (error) {
-      console.error('Get occurrence error:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Erro ao buscar ocorrência'
-      });
+      return res.status(500).json({ success: false, message: 'Erro ao buscar ocorrência' });
     }
   }
 
-  // ==================== UPDATE ====================
-  async update(req: AuthRequest, res: Response) {
-    try {
-      const { id } = req.params;
-      const { status, prioridade, descricao, responsavelId, observacoes } = req.body;
-
-      const occurrence = await prisma.occurrence.findUnique({
-        where: { id }
-      });
-
-      if (!occurrence) {
-        return res.status(404).json({
-          success: false,
-          message: 'Ocorrência não encontrada'
-        });
-      }
-
-      // Criar histórico se status mudou
-      if (status && status !== occurrence.status) {
-        await prisma.occurrenceHistory.create({
-          data: {
-            occurrenceId: id,
-            statusAnterior: occurrence.status,
-            statusNovo: status,
-            observacao: observacoes,
-            modificadoPor: req.user!.id
-          }
-        });
-      }
-
-      const dataUpdate: any = {
-        updatedAt: new Date()
-      };
-
-      if (status) dataUpdate.status = status;
-      if (prioridade) dataUpdate.prioridade = prioridade;
-      if (descricao) dataUpdate.descricao = descricao;
-      if (observacoes) dataUpdate.observacoes = observacoes;
-      if (responsavelId) dataUpdate.responsavelId = responsavelId;
-
-      // Atualizar datas de acordo com status
-      if (status === 'EM_ATENDIMENTO' && !occurrence.dataAtendimento) {
-        dataUpdate.dataAtendimento = new Date();
-        // Calcular tempo de resposta em minutos
-        const tempoResposta = Math.floor(
-          (new Date().getTime() - occurrence.dataOcorrencia.getTime()) / 60000
-        );
-        dataUpdate.tempoResposta = tempoResposta;
-      }
-
-      if (status === 'CONCLUIDO' && !occurrence.dataConclusao) {
-        dataUpdate.dataConclusao = new Date();
-      }
-
-      const updatedOccurrence = await prisma.occurrence.update({
-        where: { id },
-        data: dataUpdate,
-        include: {
-          criadoPor: {
-            select: { nome: true, email: true }
-          },
-          responsavel: {
-            select: { nome: true, email: true }
-          }
-        }
-      });
-
-      // Log de auditoria
-      await prisma.auditLog.create({
-        data: {
-          userId: req.user!.id,
-          acao: 'UPDATE',
-          entidade: 'OCCURRENCE',
-          entidadeId: id,
-          detalhes: { status, prioridade },
-          ip: req.ip,
-          userAgent: req.headers['user-agent']
-        }
-      });
-
-      return res.json({
-        success: true,
-        message: 'Ocorrência atualizada com sucesso',
-        data: updatedOccurrence
-      });
-    } catch (error) {
-      console.error('Update occurrence error:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Erro ao atualizar ocorrência'
-      });
-    }
-  }
-
-  // ==================== DELETE ====================
   async delete(req: AuthRequest, res: Response) {
     try {
       const { id } = req.params;
-
-      const occurrence = await prisma.occurrence.findUnique({
-        where: { id }
-      });
-
-      if (!occurrence) {
-        return res.status(404).json({
-          success: false,
-          message: 'Ocorrência não encontrada'
-        });
-      }
-
-      await prisma.occurrence.delete({
-        where: { id }
-      });
-
-      // Log de auditoria
+      const occurrence = await prisma.occurrence.findUnique({ where: { id } });
+      if (!occurrence) return res.status(404).json({ success: false, message: 'Ocorrência não encontrada' });
+      
+      await prisma.occurrence.delete({ where: { id } });
+      
       await prisma.auditLog.create({
         data: {
           userId: req.user!.id,
           acao: 'DELETE',
           entidade: 'OCCURRENCE',
           entidadeId: id,
-          detalhes: { tipo: occurrence.tipo, local: occurrence.local },
+          detalhes: { tipo: occurrence.tipo },
           ip: req.ip,
           userAgent: req.headers['user-agent']
         }
       });
-
-      return res.json({
-        success: true,
-        message: 'Ocorrência excluída com sucesso'
-      });
+      return res.json({ success: true, message: 'Ocorrência excluída com sucesso' });
     } catch (error) {
-      console.error('Delete occurrence error:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Erro ao excluir ocorrência'
-      });
+      return res.status(500).json({ success: false, message: 'Erro ao excluir ocorrência' });
     }
   }
 
-  // ==================== STATS ====================
   async getStats(req: AuthRequest, res: Response) {
     try {
-      const [
-        total,
-        novas,
-        emAnalise,
-        emAtendimento,
-        concluidas,
-        porTipo,
-        porPrioridade
-      ] = await Promise.all([
+      const [total, novas, emAnalise, emAtendimento, concluidas, porTipo, porPrioridade] = await Promise.all([
         prisma.occurrence.count(),
         prisma.occurrence.count({ where: { status: 'NOVO' } }),
         prisma.occurrence.count({ where: { status: 'EM_ANALISE' } }),
         prisma.occurrence.count({ where: { status: 'EM_ATENDIMENTO' } }),
         prisma.occurrence.count({ where: { status: 'CONCLUIDO' } }),
-        prisma.occurrence.groupBy({
-          by: ['tipo'],
-          _count: true
-        }),
-        prisma.occurrence.groupBy({
-          by: ['prioridade'],
-          _count: true
-        })
+        prisma.occurrence.groupBy({ by: ['tipo'], _count: true }),
+        prisma.occurrence.groupBy({ by: ['prioridade'], _count: true })
       ]);
-
-      // Calcular tempo médio de resposta
-      const temposResposta = await prisma.occurrence.findMany({
-        where: {
-          tempoResposta: { not: null }
-        },
-        select: { tempoResposta: true }
-      });
-
-      const tempoMedioResposta = temposResposta.length > 0
-        ? Math.round(
-            temposResposta.reduce((sum, occ) => sum + (occ.tempoResposta || 0), 0) /
-              temposResposta.length
-          )
-        : 0;
 
       return res.json({
         success: true,
-        data: {
-          total,
-          porStatus: {
-            novas,
-            emAnalise,
-            emAtendimento,
-            concluidas
-          },
-          porTipo,
-          porPrioridade,
-          tempoMedioResposta // em minutos
-        }
+        data: { total, porStatus: { novas, emAnalise, emAtendimento, concluidas }, porTipo, porPrioridade }
       });
     } catch (error) {
-      console.error('Get stats error:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Erro ao buscar estatísticas'
-      });
-    }
-  }
-
-  // ==================== GEOCODING HELPER ====================
-  private async geocodeAddress(address: string): Promise<{ latitude: number; longitude: number }> {
-    try {
-      // Usando OpenCage Geocoding API (gratuito)
-      const apiKey = process.env.OPENCAGE_API_KEY;
-      
-      if (!apiKey) {
-        throw new Error('API Key não configurada');
-      }
-
-      const response = await axios.get(
-        `https://api.opencagedata.com/geocode/v1/json`,
-        {
-          params: {
-            q: `${address}, Recife, Pernambuco, Brasil`,
-            key: apiKey,
-            limit: 1
-          }
-        }
-      );
-
-      if (response.data.results && response.data.results.length > 0) {
-        const result = response.data.results[0];
-        return {
-          latitude: result.geometry.lat,
-          longitude: result.geometry.lng
-        };
-      }
-
-      throw new Error('Endereço não encontrado');
-    } catch (error) {
-      console.error('Geocoding error:', error);
-      throw error;
+      return res.status(500).json({ success: false, message: 'Erro ao buscar estatísticas' });
     }
   }
 }
