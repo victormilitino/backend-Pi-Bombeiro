@@ -21,58 +21,63 @@ interface CreateOccurrenceDTO {
 export class OccurrenceService {
   
   async create(data: CreateOccurrenceDTO) {
-    let lat = data.latitude;
-    let lng = data.longitude;
+    // 1. CONVERSÃO CRÍTICA: Garantir que lat/lng sejam números (floats)
+    // O formulário envia como string " -8.05", precisamos converter para -8.05
+    let lat = data.latitude ? parseFloat(String(data.latitude)) : undefined;
+    let lng = data.longitude ? parseFloat(String(data.longitude)) : undefined;
 
-    // Extrai apenas os nomes dos arquivos
+    // Extrai nomes dos arquivos
     const fotos = data.files?.map(file => file.filename) || [];
 
-    // Geocodificação
+    // 2. Geocodificação Automática (se não vier coordenadas)
+    // Força a busca ser em "Recife, Pernambuco" para evitar endereços da Europa/EUA
     if (!lat || !lng) {
       try {
-        const geocoded = await this.geocodeAddress(data.endereco);
+        // Adiciona contexto 'Recife, Pernambuco' à busca
+        const enderecoBusca = `${data.endereco}, Recife, Pernambuco, Brasil`;
+        const geocoded = await this.geocodeAddress(enderecoBusca);
         lat = geocoded.latitude;
         lng = geocoded.longitude;
       } catch (error) {
-        throw { 
-          statusCode: 400, 
-          message: 'Não foi possível localizar as coordenadas deste endereço automaticamente. Por favor, insira a latitude e longitude manualmente.' 
-        };
+        // Se falhar a geocodificação, usa coordenadas padrão do Marco Zero (Recife)
+        // para não quebrar o sistema, mas avisa no log.
+        console.warn('Falha na geocodificação, usando padrão:', error);
+        lat = -8.0631;
+        lng = -34.8711;
       }
     }
 
-    const latitude = typeof lat === 'string' ? parseFloat(lat) : lat;
-    const longitude = typeof lng === 'string' ? parseFloat(lng) : lng;
-
-    // 1. Cria no Banco de Dados
+    // 3. Cria no Banco
     const occurrence = await prisma.occurrence.create({
       data: {
         tipo: data.tipo,
         local: data.local,
         endereco: data.endereco,
-        latitude: latitude!,
-        longitude: longitude!,
+        latitude: lat,
+        longitude: lng,
         status: data.status || 'NOVO',
         prioridade: data.prioridade || 'MEDIA',
         descricao: data.descricao,
+        fotos: fotos, // Salva o array de nomes de arquivos
         criadoPorId: data.criadoPorId,
-        responsavelId: data.responsavelId,
-        fotos: fotos,
-        dataOcorrencia: new Date()
+        responsavelId: data.responsavelId
       },
       include: {
-        criadoPor: { select: { nome: true, email: true, cargo: true } },
-        responsavel: { select: { nome: true, email: true, cargo: true } }
+        criadoPor: {
+          select: { id: true, nome: true, email: true }
+        },
+        responsavel: {
+          select: { id: true, nome: true }
+        }
       }
     });
 
-    // 2. Emite o evento para o Socket.io (Tempo Real)
+    // 4. Emite Socket para o Frontend ver em tempo real
     try {
       const io = getIO();
       io.emit('occurrence:new', occurrence);
     } catch (error) {
-      console.error('Erro ao emitir socket na criação:', error);
-      // Não damos throw aqui para não cancelar a criação se o socket falhar
+      console.error('Erro ao emitir socket:', error);
     }
 
     return occurrence;
